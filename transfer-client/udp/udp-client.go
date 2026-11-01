@@ -120,7 +120,26 @@ func Fetch(address string, filename string) ([]byte, error) {
 
 	chunks := make(map[int]transferdata.TCP_Pack)
 	num_chunks := 0
+	// experiment logging. print one summary line when Fetch returns
+	started := time.Now()
+	// how many OPEN messages were sent
+	openAttempts := 0
+	// chunks that arrived from OPEN, before any RETY
+	firstBurst := 0
+	// how many rounds of RETY were sent
+	retryRounds := 0
+	// total RETY messages
+	// each one is one s3 read on the backend
+	retryRequests := 0
+	defer func() {
+		fmt.Fprintf(os.Stderr,
+			"FETCH_SUMMARY file=%v chunks=%v first_burst=%v open_attempts=%v retry_rounds=%v retry_requests=%v seconds=%.2f\n",
+			filename, num_chunks, firstBurst, openAttempts, retryRounds, retryRequests,
+			time.Since(started).Seconds())
+	}()
 	for attempt := 0; attempt < maxOpenAttempts && num_chunks == 0; attempt++ {
+		// count OPEN attempts
+		openAttempts++
 		var err error
 		conn, err = redial(conn, address)
 		if err != nil {
@@ -138,6 +157,8 @@ func Fetch(address string, filename string) ([]byte, error) {
 	if num_chunks == 0 {
 		return nil, ErrNoData
 	}
+	// chunks received from the first OPEN before any RETY
+	firstBurst = len(chunks)
 
 	silent := false
 	for round := 0; round < maxRetryRounds; round++ {
@@ -154,6 +175,9 @@ func Fetch(address string, filename string) ([]byte, error) {
 			}
 		}
 		fmt.Fprintf(os.Stderr, "Missing chunks %v, retrying\n", missing)
+		// each pass thru this loop is one retry round
+		retryRounds++
+		retryRequests += len(missing)
 		for _, id := range missing {
 			_, err := fmt.Fprintf(conn, "RETY %v %v", filename, id)
 			if err != nil {
